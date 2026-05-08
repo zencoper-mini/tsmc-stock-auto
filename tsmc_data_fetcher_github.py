@@ -36,7 +36,7 @@ def update_database():
     cursor = conn.cursor()
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS stock_data_v2 (
-            日期 TEXT, 成交張數 INTEGER, 成交金額 TEXT, 收盤價 TEXT, 法人項目 TEXT, 買賣超股數 TEXT,
+            日期 TEXT, 成交張數 INTEGER, 成交金額 TEXT, 收盤價 TEXT, 法人項目 TEXT, 買賣超股數 REAL,
             PRIMARY KEY (日期, 法人項目)
         )
     ''')
@@ -64,14 +64,10 @@ def update_database():
                 inst_data = safe_get_json(inst_url )
                 
                 if inst_data and inst_data.get("stat") == "OK":
-                    # --- 修復重點：動態偵測欄位索引 ---
                     fields_i = inst_data["fields"]
                     data_i = inst_data["data"]
-                    
-                    # 建立 DataFrame，不直接指定 columns 以免數量不符報錯
                     df_i = pd.DataFrame(data_i)
                     
-                    # 找出關鍵欄位的索引位置
                     def find_idx(name):
                         for i, f in enumerate(fields_i):
                             if name in f: return i
@@ -80,9 +76,11 @@ def update_database():
                     idx_no = find_idx("證券代號")
                     idx_foreign = find_idx("外陸資買賣超股數")
                     idx_trust = find_idx("投信買賣超股數")
-                    idx_dealer = find_idx("自營商買賣超股數")
+                    # 偵測自營商細分欄位
+                    idx_dealer_self = find_idx("自營商買賣超股數(自行買賣)")
+                    idx_dealer_hedge = find_idx("自營商買賣超股數(避險)")
+                    idx_dealer_total = find_idx("自營商買賣超股數")
 
-                    # 篩選台積電資料
                     tsmc_row = df_i[df_i[idx_no] == STOCK_NO] if idx_no is not None else pd.DataFrame()
                     
                     if not tsmc_row.empty:
@@ -94,10 +92,20 @@ def update_database():
                             day_stock_copy = day_stock.copy()
                             day_stock_copy['成交張數'] = day_stock_copy['成交股數'].str.replace(',', '').astype(float) // 1000
                             
+                            # 數值清理函數
+                            def clean_val(val):
+                                return float(str(val).replace(',', ''))
+
+                            # 計算自營商總和 (自行買賣 + 避險)
+                            if idx_dealer_self is not None and idx_dealer_hedge is not None:
+                                dealer_sum = clean_val(tsmc_row[idx_dealer_self].values[0]) + clean_val(tsmc_row[idx_dealer_hedge].values[0])
+                            else:
+                                dealer_sum = clean_val(tsmc_row[idx_dealer_total].values[0])
+
                             res = [
-                                {'日期': target_date, '成交張數': int(day_stock_copy['成交張數'].values[0]), '成交金額': day_stock_copy['成交金額'].values[0], '收盤價': day_stock_copy['收盤價'].values[0], '法人項目': '外資', '買賣超股數': tsmc_row[idx_foreign].values[0]},
-                                {'日期': target_date, '成交張數': int(day_stock_copy['成交張數'].values[0]), '成交金額': day_stock_copy['成交金額'].values[0], '收盤價': day_stock_copy['收盤價'].values[0], '法人項目': '投信', '買賣超股數': tsmc_row[idx_trust].values[0]},
-                                {'日期': target_date, '成交張數': int(day_stock_copy['成交張數'].values[0]), '成交金額': day_stock_copy['成交金額'].values[0], '收盤價': day_stock_copy['收盤價'].values[0], '法人項目': '自營商', '買賣超股數': tsmc_row[idx_dealer].values[0]}
+                                {'日期': target_date, '成交張數': int(day_stock_copy['成交張數'].values[0]), '成交金額': day_stock_copy['成交金額'].values[0], '收盤價': day_stock_copy['收盤價'].values[0], '法人項目': '外資', '買賣超股數': clean_val(tsmc_row[idx_foreign].values[0])},
+                                {'日期': target_date, '成交張數': int(day_stock_copy['成交張數'].values[0]), '成交金額': day_stock_copy['成交金額'].values[0], '收盤價': day_stock_copy['收盤價'].values[0], '法人項目': '投信', '買賣超股數': clean_val(tsmc_row[idx_trust].values[0])},
+                                {'日期': target_date, '成交張數': int(day_stock_copy['成交張數'].values[0]), '成交金額': day_stock_copy['成交金額'].values[0], '收盤價': day_stock_copy['收盤價'].values[0], '法人項目': '自營商', '買賣超股數': dealer_sum}
                             ]
                             pd.DataFrame(res).to_sql('stock_data_v2', conn, if_exists='append', index=False)
                             print(f"✅ {target_date} 更新成功")
@@ -107,7 +115,6 @@ def update_database():
     # 匯出 CSV
     raw_df = pd.read_sql("SELECT * FROM stock_data_v2", conn)
     if not raw_df.empty:
-        raw_df['買賣超股數'] = raw_df['買賣超股數'].str.replace(',', '').astype(float)
         pivot_df = raw_df.pivot_table(index=['日期', '成交張數', '成交金額', '收盤價'], columns='法人項目', values='買賣超股數').reset_index()
         pivot_df.columns.name = None
         pivot_df = pivot_df.sort_values('日期', ascending=False)
