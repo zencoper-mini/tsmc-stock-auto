@@ -27,7 +27,7 @@ jobs:
           pip install requests pandas
 
       - name: Run crawler script
-        run: python tsmc_crawler.py  # 請確保你的檔名是這個
+        run: python tsmc_data_fetcher_github.py  # 請確保你的檔名是這個
 
       - name: Commit and Push changes
         run: |
