@@ -34,7 +34,7 @@ def safe_get_json(url, retries=2):
 def update_database():
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
-    # 這裡將欄位名稱從 [成交張數] 改回 [成交股數]
+    # 將原先的「成交張數」欄位更名為「成交股數」
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS stock_data_v2 (
             日期 TEXT,
@@ -50,25 +50,23 @@ def update_database():
 
     today = datetime.now()
     current_date = START_DATE_DT
-
     print(f"🚀 GitHub Actions 啟動 (目標: {START_DATE_DT.strftime('%Y-%m-%d')} 至今)")
 
     while current_date <= today:
         date_str = current_date.strftime("%Y%m%d")
         target_date = current_date.strftime("%Y-%m-%d")
-
         check_query = f"SELECT 1 FROM stock_data_v2 WHERE 日期 = '{target_date}' LIMIT 1"
         exists = pd.read_sql(check_query, conn)
 
         if exists.empty:
             stock_url = f"https://twse.com.tw{date_str}&stockNo={STOCK_NO}"
             stock_data = safe_get_json(stock_url)
-
+            
             if stock_data and stock_data.get("stat") == "OK":
                 time.sleep(random.uniform(3, 6))
                 inst_url = f"https://twse.com.tw{date_str}&selectType=ALLBUT0999"
                 inst_data = safe_get_json(inst_url)
-
+                
                 if inst_data and inst_data.get("stat") == "OK":
                     fields_i = inst_data["fields"]
                     data_i = inst_data["data"]
@@ -91,17 +89,16 @@ def update_database():
                     if not tsmc_row.empty:
                         df_s = pd.DataFrame(stock_data["data"], columns=stock_data["fields"])
                         df_s['日期'] = df_s['日期'].apply(lambda x: str(int(x.split('/')[0]) + 1911) + "-" + x.split('/')[1] + "-" + x.split('/')[2])
-
                         day_stock = df_s[df_s['日期'] == target_date]
+                        
                         if not day_stock.empty:
                             day_stock_copy = day_stock.copy()
-                            
-                            # --- 修改處：取消除以 1000，並保留原始股數數值 ---
-                            volume_raw = day_stock_copy['成交股數'].str.replace(',', '').astype(float)
-                            volume_int = int(volume_raw.values[0])
+                            # 修正點：取消 // 1000，直接保留成交股數
+                            stock_volume = int(day_stock_copy['成交股數'].str.replace(',', '').astype(float))
 
                             def clean_val(val):
-                                return float(str(val).replace(',', ''))
+                                val_str = str(val).replace(',', '').strip()
+                                return float(val_str) if val_str not in ['', '--'] else 0.0
 
                             if idx_dealer_self is not None and idx_dealer_hedge is not None:
                                 dealer_sum = clean_val(tsmc_row[idx_dealer_self].values[0]) + clean_val(tsmc_row[idx_dealer_hedge].values[0])
@@ -109,26 +106,26 @@ def update_database():
                                 dealer_sum = clean_val(tsmc_row[idx_dealer_total].values[0])
 
                             res = [
-                                {'日期': target_date, '成交股數': volume_int, '成交金額': day_stock_copy['成交金額'].values[0], '收盤價': day_stock_copy['收盤價'].values[0], '法人項目': '外資', '買賣超股數': clean_val(tsmc_row[idx_foreign].values[0])},
-                                {'日期': target_date, '成交股數': volume_int, '成交金額': day_stock_copy['成交金額'].values[0], '收盤價': day_stock_copy['收盤價'].values[0], '法人項目': '投信', '買賣超股數': clean_val(tsmc_row[idx_trust].values[0])},
-                                {'日期': target_date, '成交股數': volume_int, '成交金額': day_stock_copy['成交金額'].values[0], '收盤價': day_stock_copy['收盤價'].values[0], '法人項目': '自營商', '買賣超股數': dealer_sum}
+                                {'日期': target_date, '成交股數': stock_volume, '成交金額': day_stock_copy['成交金額'].values[0], '收盤價': day_stock_copy['收盤價'].values[0], '法人項目': '外資', '買賣超股數': clean_val(tsmc_row[idx_foreign].values[0])},
+                                {'日期': target_date, '成交股數': stock_volume, '成交金額': day_stock_copy['成交金額'].values[0], '收盤價': day_stock_copy['收盤價'].values[0], '法人項目': '投信', '買賣超股數': clean_val(tsmc_row[idx_trust].values[0])},
+                                {'日期': target_date, '成交股數': stock_volume, '成交金額': day_stock_copy['成交金額'].values[0], '收盤價': day_stock_copy['收盤價'].values[0], '法人項目': '自營商', '買賣超股數': dealer_sum}
                             ]
                             pd.DataFrame(res).to_sql('stock_data_v2', conn, if_exists='append', index=False)
                             print(f"✅ {target_date} 更新成功")
                             time.sleep(random.uniform(4, 8))
-
+        
         current_date += timedelta(days=1)
 
     # 匯出 CSV
     raw_df = pd.read_sql("SELECT * FROM stock_data_v2", conn)
     if not raw_df.empty:
-        # 注意：這裡的 index 也要同步改為 '成交股數'
+        # 轉置時標題會自動對應「成交股數」
         pivot_df = raw_df.pivot_table(index=['日期', '成交股數', '成交金額', '收盤價'], columns='法人項目', values='買賣超股數').reset_index()
         pivot_df.columns.name = None
         pivot_df = pivot_df.sort_values('日期', ascending=False)
         pivot_df.to_csv(CSV_PATH, index=False, encoding='utf-8-sig')
-        print(f"📊 CSV 已更新。")
-
+        print(f"📊 CSV 已更新 (成交張數標題已置換為成交股數)。")
+    
     conn.close()
 
 if __name__ == "__main__":
