@@ -1,1 +1,38 @@
+name: Daily TSMC Stock Update
 
+on:
+  schedule:
+    # 每天台灣時間 16:30 執行 (UTC 08:30)
+    - cron: '30 8 * * *'
+  workflow_dispatch: # 允許手動點擊按鈕執行
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # 賦予寫入權限以更新 DB 和 CSV
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.9'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install requests pandas
+
+      - name: Run crawler script
+        run: python tsmc_data_fetcher_github_old.py  # 請確保你的檔名是這個
+
+      - name: Commit and Push changes
+        run: |
+          git config --local user.email "github-actions[bot]@://github.com"
+          git config --local user.name "github-actions[bot]"
+          git add tsmc_stock.db tsmc_data_pivot.csv
+          git commit -m "📊 自動更新台積電數據: $(date +'%Y-%m-%d')" || echo "無資料更新"
+          git push
