@@ -16,15 +16,15 @@ def safe_get_json(url, retries=2):
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
         'Accept': 'application/json, text/javascript, */*; q=0.01',
-        'Referer': 'https://www.twse.com.tw/zh/page/trading/exchange/STOCK_DAY.html'
+        'Referer': 'https://twse.com.tw'
     }
-    for i in range(retries ):
+    for i in range(retries):
         try:
             response = requests.get(url, headers=headers, timeout=20)
-            if "application/json" in response.headers.get("Content-Type", ""):
+            if response.status_code == 200 and "application/json" in response.headers.get("Content-Type", ""):
                 return response.json()
             else:
-                print(f"⚠️ 警告：證交所回傳了非資料內容。休息 5 分鐘...")
+                print(f"⚠️ 警告：證交所回傳了非預期內容。休息 5 分鐘...")
                 time.sleep(300)
         except Exception as e:
             print(f"⚠️ 網路異常: {e}")
@@ -36,7 +36,12 @@ def update_database():
     cursor = conn.cursor()
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS stock_data_v2 (
-            日期 TEXT, 成交張數 INTEGER, 成交金額 TEXT, 收盤價 TEXT, 法人項目 TEXT, 買賣超股數 REAL,
+            日期 TEXT,
+            成交張數 INTEGER,
+            成交金額 TEXT,
+            收盤價 TEXT,
+            法人項目 TEXT,
+            買賣超股數 REAL,
             PRIMARY KEY (日期, 法人項目)
         )
     ''')
@@ -44,45 +49,45 @@ def update_database():
 
     today = datetime.now()
     current_date = START_DATE_DT
-    
     print(f"🚀 GitHub Actions 啟動 (目標: {START_DATE_DT.strftime('%Y-%m-%d')} 至今)")
 
     while current_date <= today:
         date_str = current_date.strftime("%Y%m%d")
         target_date = current_date.strftime("%Y-%m-%d")
-        
         check_query = f"SELECT 1 FROM stock_data_v2 WHERE 日期 = '{target_date}' LIMIT 1"
         exists = pd.read_sql(check_query, conn)
 
         if exists.empty:
-            stock_url = f"https://www.twse.com.tw/rwd/zh/afterTrading/STOCK_DAY?date={date_str}&stockNo={STOCK_NO}"
-            stock_data = safe_get_json(stock_url )
+            # --- 【修正後】個股日成交資訊網址 ---
+            stock_url = f"https://twse.com.tw{date_str}&stockNo={STOCK_NO}"
+            stock_data = safe_get_json(stock_url)
             
             if stock_data and stock_data.get("stat") == "OK":
                 time.sleep(random.uniform(3, 6))
-                inst_url = f"https://www.twse.com.tw/rwd/zh/fund/T86?date={date_str}&selectType=ALLBUT0999"
-                inst_data = safe_get_json(inst_url )
+                
+                # --- 【修正後】三大法人買賣超網址 ---
+                inst_url = f"https://twse.com.tw{date_str}&selectType=ALLBUT0999"
+                inst_data = safe_get_json(inst_url)
                 
                 if inst_data and inst_data.get("stat") == "OK":
                     fields_i = inst_data["fields"]
                     data_i = inst_data["data"]
                     df_i = pd.DataFrame(data_i)
-                    
+
                     def find_idx(name):
                         for i, f in enumerate(fields_i):
                             if name in f: return i
                         return None
-                    
+
                     idx_no = find_idx("證券代號")
                     idx_foreign = find_idx("外陸資買賣超股數")
                     idx_trust = find_idx("投信買賣超股數")
-                    # 偵測自營商細分欄位
                     idx_dealer_self = find_idx("自營商買賣超股數(自行買賣)")
                     idx_dealer_hedge = find_idx("自營商買賣超股數(避險)")
                     idx_dealer_total = find_idx("自營商買賣超股數")
 
                     tsmc_row = df_i[df_i[idx_no] == STOCK_NO] if idx_no is not None else pd.DataFrame()
-                    
+
                     if not tsmc_row.empty:
                         df_s = pd.DataFrame(stock_data["data"], columns=stock_data["fields"])
                         df_s['日期'] = df_s['日期'].apply(lambda x: str(int(x.split('/')[0]) + 1911) + "-" + x.split('/')[1] + "-" + x.split('/')[2])
@@ -90,13 +95,12 @@ def update_database():
                         
                         if not day_stock.empty:
                             day_stock_copy = day_stock.copy()
+                            # 恢復你的原始計算邏輯：成交股數轉成交張數
                             day_stock_copy['成交張數'] = day_stock_copy['成交股數'].str.replace(',', '').astype(float) // 1000
-                            
-                            # 數值清理函數
+
                             def clean_val(val):
                                 return float(str(val).replace(',', ''))
 
-                            # 計算自營商總和 (自行買賣 + 避險)
                             if idx_dealer_self is not None and idx_dealer_hedge is not None:
                                 dealer_sum = clean_val(tsmc_row[idx_dealer_self].values[0]) + clean_val(tsmc_row[idx_dealer_hedge].values[0])
                             else:
@@ -109,7 +113,8 @@ def update_database():
                             ]
                             pd.DataFrame(res).to_sql('stock_data_v2', conn, if_exists='append', index=False)
                             print(f"✅ {target_date} 更新成功")
-            time.sleep(random.uniform(4, 8))
+                            time.sleep(random.uniform(4, 8))
+        
         current_date += timedelta(days=1)
 
     # 匯出 CSV
@@ -120,6 +125,7 @@ def update_database():
         pivot_df = pivot_df.sort_values('日期', ascending=False)
         pivot_df.to_csv(CSV_PATH, index=False, encoding='utf-8-sig')
         print(f"📊 CSV 已更新。")
+    
     conn.close()
 
 if __name__ == "__main__":
